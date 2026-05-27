@@ -2,8 +2,8 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { config } from 'dotenv';
 import { getProviderById } from '@/providers';
 
-// Load .env on module import
-config({ quiet: true });
+// Load local .env on module import so project-scoped keys win over shell-global keys.
+config({ override: true, quiet: true });
 
 export function getApiKeyNameForProvider(providerId: string): string | undefined {
   return getProviderById(providerId)?.apiKeyEnvVar;

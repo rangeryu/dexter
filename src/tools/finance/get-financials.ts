@@ -20,6 +20,7 @@ Intelligent meta-tool for retrieving company financial data. Takes a natural lan
 - Company facts (sector, industry, market cap, number of employees, listing date, exchange, location, weighted average shares, website)
 - Company financials (income statements, balance sheets, cash flow statements)
 - Financial metrics and key ratios (P/E ratio, market cap, EPS, dividend yield, enterprise value, ROE, ROA, margins)
+- China A-share financial indicators, Chinese financial statements, valuation snapshots, and reporting-period trends
 - Historical metrics and trend analysis across multiple periods
 - Financial segment breakdowns (revenue, margins, etc. by product / geography)
 - Earnings data (EPS/revenue beat-miss, earnings surprises)
@@ -40,7 +41,7 @@ Intelligent meta-tool for retrieving company financial data. Takes a natural lan
 
 - Call ONCE with the complete natural language query - the tool handles complexity internally
 - For comparisons like "compare AAPL vs MSFT revenue", pass the full query as-is
-- Handles ticker resolution automatically (Apple -> AAPL, Microsoft -> MSFT)
+- Handles ticker resolution automatically (Apple -> AAPL, Microsoft -> MSFT, 贵州茅台 -> 600519.SH)
 - Handles date inference (e.g., "last quarter", "past 5 years", "YTD")
 - Returns structured JSON data with source URLs for verification
 `.trim();
@@ -55,6 +56,17 @@ import { getIncomeStatements, getBalanceSheets, getCashFlowStatements, getAllFin
 import { getKeyRatios, getHistoricalKeyRatios } from './key-ratios.js';
 import { getFinancialSegments } from './segments.js';
 import { getEarnings } from './earnings.js';
+import { CHINA_FINANCE_TOOL_NAMES, createChinaFinanceTools } from './china-tools.js';
+
+const CHINA_FINANCIAL_TOOL_NAMES = new Set<string>([
+  CHINA_FINANCE_TOOL_NAMES.snapshot,
+  CHINA_FINANCE_TOOL_NAMES.indicators,
+  CHINA_FINANCE_TOOL_NAMES.statements,
+]);
+
+const CHINA_FINANCIAL_TOOLS = createChinaFinanceTools().filter((tool) =>
+  CHINA_FINANCIAL_TOOL_NAMES.has(tool.name)
+);
 
 // All finance tools available for routing
 const FINANCE_TOOLS: StructuredToolInterface[] = [
@@ -70,6 +82,8 @@ const FINANCE_TOOLS: StructuredToolInterface[] = [
   getHistoricalKeyRatios,
   // Other Data
   getFinancialSegments,
+  // China A-share fundamentals
+  ...CHINA_FINANCIAL_TOOLS,
 ];
 
 // Create a map for quick tool lookup by name
@@ -87,6 +101,7 @@ Given a user's natural language query about financial data, call the appropriate
 1. **Ticker Resolution**: Convert company names to ticker symbols:
    - Apple → AAPL, Tesla → TSLA, Microsoft → MSFT, Amazon → AMZN
    - Google/Alphabet → GOOGL, Meta/Facebook → META, Nvidia → NVDA
+   - China A-shares/ETFs: 贵州茅台 → 600519.SH, 宁德时代 → 300750.SZ, 平安银行 → 000001.SZ, 沪深300ETF → 510300.SH
 
 2. **Date Inference**: Use schema-supported filters for date ranges:
    - "last year" → report_period_gte 1 year ago
@@ -102,6 +117,9 @@ Given a user's natural language query about financial data, call the appropriate
    - For debt, assets, equity → get_balance_sheets
    - For cash flow, free cash flow → get_cash_flow_statements
    - For comprehensive analysis → get_all_financial_statements
+   - For China A-share valuation snapshot / market cap / P/E / P/B → get_cn_stock_snapshot
+   - For China A-share ROE, margins, leverage, EPS, growth → get_cn_financial_indicators
+   - For China A-share income statement, balance sheet, cash flow rows → get_cn_financial_statements
 
 4. **Efficiency**:
    - Prefer specific tools over general ones when possible
@@ -132,7 +150,8 @@ export function createGetFinancials(model: string): DynamicStructuredTool {
 - Company financials (income statements, balance sheets, cash flow)
 - Financial metrics and key ratios (P/E ratio, market cap, EPS, dividend yield, ROE, margins)
 - Historical metrics and trend analysis
-- Earnings data and financial segments`,
+- Earnings data and financial segments
+- China A-share financial indicators, Chinese financial statements, and valuation snapshots`,
     schema: GetFinancialsInputSchema,
     func: async (input, _runManager, config?: RunnableConfig) => {
       const onProgress = config?.metadata?.onProgress as ((msg: string) => void) | undefined;

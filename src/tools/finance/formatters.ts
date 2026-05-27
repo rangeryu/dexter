@@ -37,6 +37,20 @@ function fmtPrice(n: unknown): string {
   return `$${num.toFixed(2)}`;
 }
 
+function fmtCny(n: unknown): string {
+  if (n === null || n === undefined) return '—';
+  const num = Number(n);
+  if (isNaN(num)) return '—';
+  return `¥${fmtNum(num)}`;
+}
+
+function fmtPlainPrice(n: unknown): string {
+  if (n === null || n === undefined) return '—';
+  const num = Number(n);
+  if (isNaN(num)) return '—';
+  return num.toFixed(num >= 100 ? 2 : 3);
+}
+
 function fmtDate(d: unknown): string {
   if (!d) return '—';
   const str = String(d);
@@ -161,6 +175,129 @@ export function formatStockPrices(data: unknown): string {
     lines.push(`| ${row.date ?? '—'} | ${fmtPrice(row.open)} | ${fmtPrice(row.close)} | ${fmtNum(row.volume)} |`);
   }
   if (items.length > 20) lines.push(`... and ${items.length - 20} more rows`);
+  return lines.join('\n');
+}
+
+export function formatChinaSnapshot(data: unknown): string {
+  const d = (data && typeof data === 'object') ? data as Rec : {};
+  const quote = (d.quote && typeof d.quote === 'object') ? d.quote as Rec : {};
+  const valuation = (d.valuation && typeof d.valuation === 'object') ? d.valuation as Rec : {};
+  const title = `${d.symbol ?? 'CN'}${d.name ? ` ${d.name}` : ''}`;
+  const lines = [title];
+  lines.push(`- Latest: ${fmtPlainPrice(quote.close)} CNY (${fmtPct(quote.pctChange)}) on ${quote.tradeDate ?? '—'}`);
+  if (valuation.peTtm !== undefined || valuation.pb !== undefined || valuation.marketCapCny !== undefined) {
+    lines.push(`- Valuation: P/E TTM ${valuation.peTtm ?? '—'} | P/B ${valuation.pb ?? '—'} | Market Cap ${fmtCny(valuation.marketCapCny)}`);
+  }
+  if (d.industry || d.market || d.listDate) {
+    lines.push(`- Listing: ${d.industry ?? '—'} | ${d.market ?? '—'} | ${d.listDate ?? '—'}`);
+  }
+  if (d.assetType === 'etf' && d.fund && typeof d.fund === 'object') {
+    const fund = d.fund as Rec;
+    lines.push(`- Fund: ${fund.fund_type ?? '—'} | Manager ${fund.management ?? '—'} | Benchmark ${fund.benchmark ?? '—'}`);
+  }
+  return lines.join('\n');
+}
+
+export function formatChinaPrices(data: unknown): string {
+  const d = (data && typeof data === 'object') ? data as Rec : {};
+  const items = Array.isArray(d.bars) ? d.bars : [];
+  if (items.length === 0) return 'No China price history available.';
+  const lines = [`${d.symbol ?? 'CN'} Price History`, ''];
+  lines.push('| Date | Open | Close | Change | Volume | Amount |');
+  lines.push('|------|------|-------|--------|--------|--------|');
+  for (const row of items.slice(0, 20) as Rec[]) {
+    lines.push(`| ${row.tradeDate ?? '—'} | ${fmtPlainPrice(row.open)} | ${fmtPlainPrice(row.close)} | ${fmtPct(row.pctChange)} | ${fmtNum(row.volume)} | ${fmtNum(row.amount)} |`);
+  }
+  if (items.length > 20) lines.push(`... and ${items.length - 20} more rows`);
+  return lines.join('\n');
+}
+
+export function formatChinaFinancialIndicators(data: unknown): string {
+  const d = (data && typeof data === 'object') ? data as Rec : {};
+  const items = Array.isArray(d.records) ? d.records : [];
+  if (items.length === 0) return 'No China financial indicators available.';
+  const first = items[0] as Rec;
+  const lines = [`${first.symbol ?? 'CN'} Financial Indicators`, ''];
+  lines.push('| Period | EPS | ROE | Gross Margin | Net Margin | Debt/Assets | Revenue Growth | Net Profit Growth |');
+  lines.push('|--------|-----|-----|--------------|------------|-------------|----------------|-------------------|');
+  for (const row of items as Rec[]) {
+    lines.push(`| ${row.reportDate ?? '—'} | ${row.eps ?? '—'} | ${fmtPct(row.roe)} | ${fmtPct(row.grossMargin)} | ${fmtPct(row.netMargin)} | ${fmtPct(row.debtToAssets)} | ${fmtPct(row.revenueGrowth)} | ${fmtPct(row.netProfitGrowth)} |`);
+  }
+  return lines.join('\n');
+}
+
+export function formatChinaStatements(data: unknown): string {
+  const d = (data && typeof data === 'object') ? data as Rec : {};
+  const income = Array.isArray(d.incomeStatements) ? d.incomeStatements : [];
+  const balance = Array.isArray(d.balanceSheets) ? d.balanceSheets : [];
+  const cashflow = Array.isArray(d.cashFlowStatements) ? d.cashFlowStatements : [];
+  return [
+    `Income rows: ${income.length}`,
+    `Balance sheet rows: ${balance.length}`,
+    `Cash flow rows: ${cashflow.length}`,
+    JSON.stringify({ incomeStatements: income.slice(0, 3), balanceSheets: balance.slice(0, 3), cashFlowStatements: cashflow.slice(0, 3) }),
+  ].join('\n');
+}
+
+export function formatChinaDisclosures(data: unknown): string {
+  const d = (data && typeof data === 'object') ? data as Rec : {};
+  const items = Array.isArray(d.records) ? d.records : [];
+  if (items.length === 0) return 'No China disclosures found.';
+  return items.slice(0, 20).map((item, index) => {
+    const row = item as Rec;
+    return `${index + 1}. ${row.announceDate ?? '—'} ${row.title ?? '—'}`;
+  }).join('\n');
+}
+
+export function formatChinaEtfHoldings(data: unknown): string {
+  const d = (data && typeof data === 'object') ? data as Rec : {};
+  const items = Array.isArray(d.holdings) ? d.holdings : [];
+  if (items.length === 0) return 'No China ETF holdings available.';
+  const lines = [`${d.symbol ?? 'CN ETF'} Holdings`, ''];
+  lines.push('| Holding | Symbol | Weight | Market Value |');
+  lines.push('|---------|--------|--------|--------------|');
+  for (const row of items.slice(0, 20) as Rec[]) {
+    lines.push(`| ${row.name ?? '—'} | ${row.symbol ?? '—'} | ${fmtPct(Number(row.stk_mkv_ratio ?? 0) / 100)} | ${fmtCny(row.mkv)} |`);
+  }
+  return lines.join('\n');
+}
+
+export function formatChinaTradeCalendar(data: unknown): string {
+  const d = (data && typeof data === 'object') ? data as Rec : {};
+  const items = Array.isArray(d.records) ? d.records : [];
+  if (items.length === 0) return 'No China trade calendar rows available.';
+  const lines = ['China Trade Calendar', ''];
+  lines.push('| Date | Exchange | Open | Previous Trading Day |');
+  lines.push('|------|----------|------|----------------------|');
+  for (const row of items.slice(0, 30) as Rec[]) {
+    lines.push(`| ${row.date ?? '—'} | ${row.exchange ?? '—'} | ${row.isOpen ? 'yes' : 'no'} | ${row.pretradeDate ?? '—'} |`);
+  }
+  return lines.join('\n');
+}
+
+export function formatChinaCorporateActions(data: unknown): string {
+  const d = (data && typeof data === 'object') ? data as Rec : {};
+  const items = Array.isArray(d.records) ? d.records : [];
+  if (items.length === 0) return 'No China corporate actions available.';
+  const lines = [`${d.symbol ?? 'CN'} Corporate Actions`, ''];
+  lines.push('| Announce | Process | Cash Div (tax incl.) | Stock Div | Record | Ex-Date | Pay |');
+  lines.push('|----------|---------|----------------------|-----------|--------|---------|-----|');
+  for (const row of items.slice(0, 20) as Rec[]) {
+    lines.push(`| ${row.announceDate ?? '—'} | ${row.process ?? '—'} | ${row.cashDividendTax ?? row.cashDividend ?? '—'} | ${row.stockDividend ?? '—'} | ${row.recordDate ?? '—'} | ${row.exDate ?? '—'} | ${row.payDate ?? '—'} |`);
+  }
+  return lines.join('\n');
+}
+
+export function formatChinaScreener(data: unknown): string {
+  const d = (data && typeof data === 'object') ? data as Rec : {};
+  const items = Array.isArray(d.records) ? d.records : [];
+  if (items.length === 0) return 'No China stocks matched the screen.';
+  const lines = ['China A-share Screen', ''];
+  lines.push('| Symbol | Name | Industry | P/E TTM | P/B | Market Cap |');
+  lines.push('|--------|------|----------|---------|-----|------------|');
+  for (const row of items.slice(0, 25) as Rec[]) {
+    lines.push(`| ${row.symbol ?? '—'} | ${row.name ?? '—'} | ${row.industry ?? '—'} | ${row.peTtm ?? '—'} | ${row.pb ?? '—'} | ${fmtCny(row.marketCapCny)} |`);
+  }
   return lines.join('\n');
 }
 
@@ -306,6 +443,9 @@ export const FINANCIAL_FORMATTERS: Record<string, (data: unknown, args?: Rec) =>
   get_historical_key_ratios: formatHistoricalKeyRatios,
   get_earnings: formatEarnings,
   get_financial_segments: formatFinancialSegments,
+  get_cn_stock_snapshot: formatChinaSnapshot,
+  get_cn_financial_indicators: formatChinaFinancialIndicators,
+  get_cn_financial_statements: formatChinaStatements,
 };
 
 export const MARKET_DATA_FORMATTERS: Record<string, (data: unknown, args?: Rec) => string> = {
@@ -316,4 +456,11 @@ export const MARKET_DATA_FORMATTERS: Record<string, (data: unknown, args?: Rec) 
   get_company_news: formatNews,
   get_insider_trades: formatInsiderTrades,
   get_institutional_holdings: formatInstitutionalHoldings,
+  get_cn_stock_snapshot: formatChinaSnapshot,
+  get_cn_stock_prices: formatChinaPrices,
+  get_cn_disclosures: formatChinaDisclosures,
+  get_cn_etf_holdings: formatChinaEtfHoldings,
+  get_cn_trade_calendar: formatChinaTradeCalendar,
+  get_cn_corporate_actions: formatChinaCorporateActions,
+  screen_cn_stocks: formatChinaScreener,
 };

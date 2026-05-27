@@ -7,6 +7,8 @@ import { formatToolResult } from '../types.js';
 import { getCurrentDate } from '../../agent/prompts.js';
 import { getFilings, get10KFilingItems, get10QFilingItems, get8KFilingItems, getFilingItemTypes, type FilingItemTypes } from './filings.js';
 import { withTimeout, SUB_TOOL_TIMEOUT_MS } from './utils.js';
+import { getDefaultChinaMarketService } from './domain/china-market-service.js';
+import { detectChinaMarketQuery, extractChinaSymbols } from './symbol/china-symbol.js';
 
 /**
  * Rich description for the read_filings tool.
@@ -22,18 +24,20 @@ Intelligent meta-tool for reading SEC filing content. Takes a natural language q
 - Reading 8-K current reports (material events, acquisitions, earnings announcements)
 - Analyzing or comparing content across multiple SEC filings
 - Extracting specific sections from filings (e.g., "AAPL risk factors", "TSLA business description")
+- Reading China A-share announcements/disclosures (年报、季报、问询、回购、减持、分红、重组)
 
 ## When NOT to Use
 
 - Stock prices (use get_market_data)
 - Financial statements data in structured format (use get_financials)
 - Company news (use get_financials)
-- Non-SEC data (use web_search)
+- Non-SEC/non-China disclosure data (use web_search)
 
 ## Usage Notes
 
 - Call ONCE with the complete natural language query
 - Handles ticker resolution (Apple -> AAPL)
+- Handles common China symbol/name resolution (贵州茅台 -> 600519.SH, 宁德时代 -> 300750.SZ)
 - Handles filing type inference (risk factors -> 10-K, quarterly results -> 10-Q)
 - API calls can be slow - tool limits to 3 filings max per query
 - Intelligently retrieves specific sections when query targets particular content, full filing otherwise
@@ -63,6 +67,37 @@ const FilingPlanSchema = z.object({
 });
 
 type FilingPlan = z.infer<typeof FilingPlanSchema>;
+
+function sourceUrls(sources: Array<{ url?: string }>): string[] {
+  return sources.map((source) => source.url).filter((url): url is string => Boolean(url));
+}
+
+function monthsAgo(months: number): string {
+  const date = new Date();
+  date.setMonth(date.getMonth() - months);
+  return date.toISOString().slice(0, 10);
+}
+
+function inferChinaDisclosureWindow(query: string): { startDate?: string; limit: number } {
+  if (query.includes('一个月') || query.includes('近1月') || query.includes('最近1月')) {
+    return { startDate: monthsAgo(1), limit: 20 };
+  }
+  if (query.includes('三个月') || query.includes('近3月') || query.includes('最近3月')) {
+    return { startDate: monthsAgo(3), limit: 30 };
+  }
+  if (query.includes('半年') || query.includes('六个月')) {
+    return { startDate: monthsAgo(6), limit: 40 };
+  }
+  if (query.includes('一年') || query.includes('近1年') || query.includes('最近1年')) {
+    return { startDate: monthsAgo(12), limit: 50 };
+  }
+  return { startDate: monthsAgo(6), limit: 20 };
+}
+
+function inferChinaDisclosureKeywords(query: string): string[] {
+  const known = ['年报', '半年报', '季报', '一季报', '三季报', '问询', '回购', '减持', '增持', '分红', '权益分派', '重组', '并购', '定增', '担保', '诉讼'];
+  return known.filter((keyword) => query.includes(keyword));
+}
 
 // Step 2 tools: read filing content
 const STEP2_TOOLS: StructuredToolInterface[] = [
@@ -162,13 +197,43 @@ const ReadFilingsInputSchema = z.object({
 export function createReadFilings(model: string): DynamicStructuredTool {
   return new DynamicStructuredTool({
     name: 'read_filings',
-    description: `Intelligent tool for reading SEC filing content. Takes a natural language query and retrieves full text from 10-K, 10-Q, or 8-K filings. Use for:
+    description: `Intelligent tool for reading SEC filing content and China A-share announcements/disclosures. Takes a natural language query and retrieves relevant filing or announcement records. Use for:
 - Reading annual reports (10-K): business description, risk factors, MD&A
 - Reading quarterly reports (10-Q): quarterly financials, MD&A
-- Reading current reports (8-K): material events, acquisitions, earnings`,
+- Reading current reports (8-K): material events, acquisitions, earnings
+- Reading China A-share announcements: 年报、季报、问询、回购、减持、分红、重组`,
     schema: ReadFilingsInputSchema,
     func: async (input, _runManager, config?: RunnableConfig) => {
       const onProgress = config?.metadata?.onProgress as ((msg: string) => void) | undefined;
+
+      if (detectChinaMarketQuery(input.query)) {
+        const symbol = extractChinaSymbols(input.query)[0];
+        if (!symbol) {
+          return formatToolResult({
+            error: 'China disclosure query detected, but no A-share/ETF symbol was resolved. Use a code like 600519.SH or a common name like 贵州茅台.',
+          }, []);
+        }
+
+        onProgress?.(`Fetching China disclosures for ${symbol.symbol}...`);
+        try {
+          const window = inferChinaDisclosureWindow(input.query);
+          const result = await getDefaultChinaMarketService().getDisclosures(symbol.symbol, {
+            startDate: window.startDate,
+            limit: window.limit,
+            keywords: inferChinaDisclosureKeywords(input.query),
+          });
+          return formatToolResult({
+            symbol: result.symbol,
+            records: result.records,
+          }, sourceUrls(result.sources));
+        } catch (error) {
+          return formatToolResult({
+            error: 'Failed to fetch China disclosures',
+            details: error instanceof Error ? error.message : String(error),
+            symbol: symbol.symbol,
+          }, []);
+        }
+      }
 
       // Step 1: Plan ticker + filing types using structured output
       onProgress?.('Planning filing search...');

@@ -6,7 +6,7 @@
  *   bun run src/evals/run.ts --sample 10  # Run on random sample of 10 questions
  */
 
-import 'dotenv/config';
+import { config } from 'dotenv';
 import { ProcessTerminal, TUI } from '@mariozechner/pi-tui';
 import { Client } from 'langsmith';
 import type { EvaluationResult } from 'langsmith/evaluation';
@@ -17,6 +17,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Agent } from '../agent/agent.js';
 import { EvalApp, type EvalProgressEvent } from './components/index.js';
+
+config({ override: true, quiet: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

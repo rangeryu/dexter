@@ -5,6 +5,8 @@ import { callLlm } from '../../model/llm.js';
 import { formatToolResult } from '../types.js';
 import { getCurrentDate } from '../../agent/prompts.js';
 import { api } from './api.js';
+import { getDefaultChinaMarketService } from './domain/china-market-service.js';
+import { detectChinaMarketQuery } from './symbol/china-symbol.js';
 
 /**
  * Rich description for the screen_stocks tool.
@@ -19,6 +21,7 @@ Screens for stocks matching financial criteria. Takes a natural language query d
 - Screening for value, growth, dividend, or quality stocks
 - Filtering the market by valuation ratios, profitability metrics, or growth rates
 - Filtering by sector or industry (e.g., "health care stocks", "oil and gas companies")
+- Screening China A-shares by Tushare industry, P/E TTM, P/B, and market cap
 - Finding stocks matching a specific investment thesis
 
 ## When NOT to Use
@@ -34,6 +37,7 @@ Screens for stocks matching financial criteria. Takes a natural language query d
 - The tool translates your criteria into exact API filters automatically
 - Returns matching tickers with the metric values used for screening
 - Supports operators: gt, gte, lt, lte, eq, in
+- China A-share screens return CNY market-cap fields and Tushare industry labels
 - For range queries (e.g., "between 10 and 20"), use two filters: gte + lte
 `.trim();
 
@@ -61,6 +65,19 @@ const ScreenerFilterSchema = z.object({
 });
 
 type ScreenerFilters = z.infer<typeof ScreenerFilterSchema>;
+
+const ChinaScreenerSchema = z.object({
+  industries: z.array(z.string()).optional().describe('Exact Tushare China industry names such as 白酒, 银行, 半导体.'),
+  exchanges: z.array(z.enum(['SH', 'SZ', 'BJ', 'SSE', 'SZSE', 'BSE'])).optional(),
+  pe_ttm_lte: z.number().optional(),
+  pe_ttm_gte: z.number().optional(),
+  pb_lte: z.number().optional(),
+  market_cap_cny_gte: z.number().optional(),
+  market_cap_cny_lte: z.number().optional(),
+  limit: z.number().int().min(1).max(100).default(25),
+});
+
+type ChinaScreenerFilters = z.infer<typeof ChinaScreenerSchema>;
 
 // Escape curly braces for LangChain template interpolation
 function escapeTemplateVars(str: string): string {
@@ -99,6 +116,29 @@ ${escapedMetrics}
 Return only the structured output fields.`;
 }
 
+function buildChinaScreenerPrompt(): string {
+  return `You are a China A-share screening assistant.
+Current date: ${getCurrentDate()}
+
+Translate the user's natural language query into the structured China screener fields.
+
+Supported fields:
+- industries: exact Tushare industry labels if the user names an industry (examples: 白酒, 银行, 半导体, 软件服务, 电气设备)
+- exchanges: SH/SZ/BJ when the user asks for 上交所/深交所/北交所
+- pe_ttm_lte / pe_ttm_gte: trailing P/E thresholds
+- pb_lte: P/B upper bound
+- market_cap_cny_gte / market_cap_cny_lte: market cap thresholds in CNY. Convert 亿 to *100,000,000.
+- limit: default 25 unless specified.
+
+If the user asks for unsupported metrics such as ROE or revenue growth, keep the screen to valuation/market-cap/industry fields and the agent can call get_financials on shortlisted symbols afterward.
+
+Return only the structured output fields.`;
+}
+
+function sourceUrls(sources: Array<{ url?: string }>): string[] {
+  return sources.map((source) => source.url).filter((url): url is string => Boolean(url));
+}
+
 const ScreenStocksInputSchema = z.object({
   query: z.string().describe('Natural language query describing stock screening criteria'),
 });
@@ -115,10 +155,53 @@ export function createScreenStocks(model: string): DynamicStructuredTool {
 - Screening by profitability (margins, ROE, ROA)
 - Filtering by growth rates (revenue, earnings, EPS growth)
 - Dividend screening (yield, payout ratio)
-- Filtering by sector or industry (e.g., "health care", "oil and gas")`,
+- Filtering by sector or industry (e.g., "health care", "oil and gas")
+- China A-share screens by industry, P/E TTM, P/B, and market cap`,
     schema: ScreenStocksInputSchema,
     func: async (input, _runManager, config?: RunnableConfig) => {
       const onProgress = config?.metadata?.onProgress as ((msg: string) => void) | undefined;
+
+      if (detectChinaMarketQuery(input.query)) {
+        onProgress?.('Building China A-share screening criteria...');
+        let filters: ChinaScreenerFilters;
+        try {
+          const { response } = await callLlm(input.query, {
+            model,
+            systemPrompt: buildChinaScreenerPrompt(),
+            outputSchema: ChinaScreenerSchema,
+          });
+          filters = ChinaScreenerSchema.parse(response);
+        } catch (error) {
+          return formatToolResult({
+            error: 'Failed to parse China A-share screening criteria',
+            details: error instanceof Error ? error.message : String(error),
+          }, []);
+        }
+
+        onProgress?.('Screening China A-shares...');
+        try {
+          const result = await getDefaultChinaMarketService().screenStocks({
+            industries: filters.industries,
+            exchanges: filters.exchanges,
+            peTtmLte: filters.pe_ttm_lte,
+            peTtmGte: filters.pe_ttm_gte,
+            pbLte: filters.pb_lte,
+            marketCapCnyGte: filters.market_cap_cny_gte,
+            marketCapCnyLte: filters.market_cap_cny_lte,
+            limit: filters.limit,
+          });
+          return formatToolResult({
+            records: result.records,
+            criteria: result.criteria,
+          }, sourceUrls(result.sources));
+        } catch (error) {
+          return formatToolResult({
+            error: 'China A-share screener request failed',
+            details: error instanceof Error ? error.message : String(error),
+            filters,
+          }, []);
+        }
+      }
 
       // Step 1: Fetch screener metrics (cached after first call)
       onProgress?.('Loading screener metrics...');

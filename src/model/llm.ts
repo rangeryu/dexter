@@ -106,9 +106,8 @@ const MODEL_FACTORIES: Record<string, ModelFactory> = {
       },
     }),
   deepseek: (name, opts) => {
-    // Both deepseek-v4-pro and deepseek-v4-flash support thinking mode.
-    // temperature/top_p/presence_penalty/frequency_penalty are ignored in thinking mode.
-    const isThinkingModel = name === 'deepseek-v4-pro' || name === 'deepseek-v4-flash';
+    const isProModel = name === 'deepseek-v4-pro';
+
     return new ChatOpenAI({
       model: name,
       ...opts,
@@ -116,14 +115,14 @@ const MODEL_FACTORIES: Record<string, ModelFactory> = {
       configuration: {
         baseURL: 'https://api.deepseek.com',
       },
-      ...(isThinkingModel && {
-        // reasoning_effort is a top-level param; thinking toggle goes in extra_body
-        // per DeepSeek V4 API docs (OpenAI SDK compat layer)
-        reasoning_effort: 'high',
-        extraBody: {
-          thinking: { type: 'enabled' },
-        },
-      }),
+      ...(isProModel
+        ? {
+            modelKwargs: {
+              reasoning_effort: 'high',
+              thinking: { type: 'enabled' },
+            },
+          }
+        : {}),
     });
   },
   ollama: (name, opts) =>
